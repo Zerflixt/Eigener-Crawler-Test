@@ -192,10 +192,8 @@ body {
     */
     box-sizing: border-box;
 
-    /*
-        Drei Pixel breiter hellgrauer Rahmen.
-    */
-    border: 3px solid #aaa;
+    /* Kein sichtbarer Rahmen um die 3D-Ansicht. */
+    border: none;
 
     /*
         Zentriert den vorläufigen Text im Feld.
@@ -314,6 +312,22 @@ body {
         den Canvas-Elemente sonst bekommen können.
     */
     display: block;
+
+    /* Das Canvas verarbeitet die Zwei-Finger-Zoomgeste selbst. */
+    touch-action: none;
+}
+
+/* Beschreibung eines angeklickten Gegenstands. */
+#newspaper-text {
+    width: 100%;
+    max-width: 600px;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 4px 12px 16px;
+    color: #ddd;
+    font-size: 18px;
+    line-height: 1.4;
+    text-align: center;
 }</style><script role="script" id="twine-user-script" type="text/twine-javascript">//-------------- Seitenleiste ausblenden ------------------//
 UIBar.destroy();
 //----------------------------------------------------------//
@@ -502,6 +516,112 @@ camera.freezeProjectionMatrix(
     customProjection
 );
 
+
+/*
+    Zoom der 3D-Ansicht für Zwei-Finger-Gesten.
+
+    1.0 ist die normale Ansicht. Ein größerer Wert
+    verengt beide Sichtwinkel gleichmäßig und holt
+    das Bild dadurch näher heran.
+*/
+let dungeonZoom = 1.0;
+let pinchStartDistance = null;
+let pinchStartZoom = 1.0;
+
+function applyDungeonZoom() {
+    customProjection.m[0] =
+        dungeonZoom /
+        Math.tan(horizontalFov / 2);
+
+    customProjection.m[5] =
+        dungeonZoom /
+        Math.tan(verticalFov / 2);
+
+    camera.freezeProjectionMatrix(
+        customProjection
+    );
+
+    renderOnce();
+}
+
+function resetDungeonZoom() {
+    if (dungeonZoom === 1.0) {
+        return;
+    }
+
+    dungeonZoom = 1.0;
+    applyDungeonZoom();
+}
+
+function touchDistance(touches) {
+    const differenceX =
+        touches[0].clientX -
+        touches[1].clientX;
+
+    const differenceY =
+        touches[0].clientY -
+        touches[1].clientY;
+
+    return Math.hypot(
+        differenceX,
+        differenceY
+    );
+}
+
+canvas.addEventListener(
+    "touchstart",
+    function (event) {
+        if (event.touches.length !== 2) {
+            return;
+        }
+
+        event.preventDefault();
+        pinchStartDistance =
+            touchDistance(event.touches);
+        pinchStartZoom = dungeonZoom;
+    },
+    { passive: false }
+);
+
+canvas.addEventListener(
+    "touchmove",
+    function (event) {
+        if (
+            event.touches.length !== 2 ||
+            pinchStartDistance === null
+        ) {
+            return;
+        }
+
+        event.preventDefault();
+
+        const currentDistance =
+            touchDistance(event.touches);
+
+        dungeonZoom = Math.min(
+            2.5,
+            Math.max(
+                1.0,
+                pinchStartZoom *
+                currentDistance /
+                pinchStartDistance
+            )
+        );
+
+        applyDungeonZoom();
+    },
+    { passive: false }
+);
+
+canvas.addEventListener(
+    "touchend",
+    function (event) {
+        if (event.touches.length < 2) {
+            pinchStartDistance = null;
+        }
+    }
+);
+
      
 
 
@@ -634,6 +754,9 @@ function updateCameraDirection() {
                 */
                 clearCurrentSelection();
 
+                /* Jede Navigation stellt den Zoom zurück. */
+                resetDungeonZoom();
+
                 direction =
                     (direction + 3) % 4;
 
@@ -656,6 +779,9 @@ function updateCameraDirection() {
                     Objektauswahl.
                 */
                 clearCurrentSelection();
+
+                /* Jede Navigation stellt den Zoom zurück. */
+                resetDungeonZoom();
 
                 direction =
                     (direction + 1) % 4;
@@ -688,6 +814,9 @@ function updateCameraDirection() {
                     renderOnce();
                     return;
                 }
+
+                /* Erst bei einer wirklichen Bewegung zurücksetzen. */
+                resetDungeonZoom();
 
                 playerGridX = nextX;
                 playerGridZ = nextZ;
@@ -1693,6 +1822,12 @@ const selectionColor =
 */
 let was23IsSelected = false;
 
+/* Textbereich unter den Navigationsknöpfen. */
+const newspaperText =
+    document.getElementById(
+        "newspaper-text"
+    );
+
 
 /*
     Wählt WAS23 aus oder ab.
@@ -1705,6 +1840,12 @@ function setWas23Selected(
 ) {
 
     was23IsSelected = selected;
+
+    /*
+        Der Beschreibungstext ist nur sichtbar,
+        solange die Zeitung ausgewählt ist.
+    */
+    newspaperText.hidden = !selected;
 
     was23Parts.forEach(
         function (mesh) {
@@ -3114,6 +3255,23 @@ scene.meshes.forEach(
 scene.executeWhenReady(
     function () {
         renderOnce();
+
+        /*
+            Einige Browser melden die Szene bereits als bereit,
+            während einzelne GPU-Texturen noch übertragen werden.
+
+            Diese wenigen zusätzlichen Anfangsbilder fangen das
+            zuverlässig ab. Danach bleibt die permanente
+            Render-Schleife weiterhin ausgeschaltet.
+        */
+        [100, 300, 750, 1500].forEach(
+            function (delay) {
+                setTimeout(
+                    renderOnce,
+                    delay
+                );
+            }
+        );
     }
 );
                 }).catch(function (error) {
@@ -3166,6 +3324,7 @@ function renderOnce() {
         ↱
     &lt;/button&gt;
 &lt;/div&gt;
+&lt;p id=&quot;newspaper-text&quot; hidden&gt;die Wild am Sonntag 23, wer hat die wohl hier liegen gelassen?!&lt;/p&gt;
 &lt;&lt;/nobr&gt;&gt;</tw-passagedata></tw-storydata>
 	<script id="script-sugarcube" type="text/javascript">
 	/*! SugarCube JS */
