@@ -320,7 +320,13 @@ body {
         Zwei-Finger-Geste die gesamte Webseite – einschließlich
         Dungeonansicht, Zeitung, Text und Navigationsknöpfen.
     */
-    touch-action: auto;
+    /*
+        "!important" ist hier absichtlich nötig:
+        Babylon setzt am Canvas selbst eine Touch-Vorgabe.
+        Diese Zeile gibt dem Browser trotzdem ausdrücklich
+        Pinch-Zoom und das Verschieben der vergrößerten Seite frei.
+    */
+    touch-action: pan-x pan-y pinch-zoom !important;
 }
 
 /* Beschreibung eines angeklickten Gegenstands. */
