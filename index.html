@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <title>Webgl Dungeoncrawler test V01.01</title>
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=5, user-scalable=yes" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
 <meta name="application-name" content="SugarCube" />
 <meta name="version" content="2.37.3" />
 <!--
@@ -340,7 +340,41 @@ body {
     font-size: 18px;
     line-height: 1.4;
     text-align: center;
-}</style><script role="script" id="twine-user-script" type="text/twine-javascript">//-------------- Seitenleiste ausblenden ------------------//
+}
+
+/*
+    Ordnerauswahl für den lokalen Offline-Betrieb.
+    Auf GitHub wird dieser ganze Bereich ausgeblendet.
+*/
+#offline-asset-chooser {
+    width: 100%;
+    max-width: 600px;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 10px;
+    color: #ddd;
+    text-align: center;
+}
+
+#asset-folder-input {
+    max-width: 100%;
+}
+
+/* Umschalter für den ersten Bleistift-Shader-Test. */
+#pencil-style-control {
+    width: 100%;
+    max-width: 600px;
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 0 10px 10px;
+}
+
+#pencil-style-toggle {
+    width: 100%;
+    min-height: 44px;
+    margin: 0;
+}
+</style><script role="script" id="twine-user-script" type="text/twine-javascript">//-------------- Seitenleiste ausblenden ------------------//
 UIBar.destroy();
 //----------------------------------------------------------//
 
@@ -349,12 +383,28 @@ UIBar.destroy();
     Lädt zuerst Babylon.js vollständig.
     Danach wird der zusätzliche GLB-Modell-Lader geladen.
 */
+/*
+    Beim lokalen Start ohne Webserver laden wir Babylon
+    aus dem Unterordner Assets. Auf GitHub bleibt weiterhin
+    das offizielle Babylon-CDN zuständig.
+*/
+const runsLocally =
+    window.location.protocol === "file:";
+
+const babylonScriptUrl = runsLocally
+    ? "Assets/babylon.js"
+    : "https://cdn.babylonjs.com/babylon.js";
+
+const babylonLoaderUrl = runsLocally
+    ? "Assets/babylonjs.loaders.min.js"
+    : "https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js";
+
 setup.babylonReady = importScripts(
-    "https://cdn.babylonjs.com/babylon.js"
+    babylonScriptUrl
 ).then(function () {
 
     return importScripts(
-        "https://cdn.babylonjs.com/loaders/babylonjs.loaders.min.js"
+        babylonLoaderUrl
     );
 });
 
@@ -462,6 +512,24 @@ $(document).on(":passagedisplay", function () {
             scene
         );
 
+        /*
+            Getrennter Zeichenweg für farbige Sonderobjekte.
+
+            Die Hauptkamera sieht alle normalen Dungeon-Meshes.
+            Diese zweite Kamera sieht ausschließlich Objekte auf
+            der Sonderobjekt-Ebene und besitzt keinen Bleistifteffekt.
+        */
+        const DUNGEON_LAYER_MASK = 0x0fffffff;
+        const COLOR_OBJECT_LAYER_MASK = 0x10000000;
+
+        camera.layerMask = DUNGEON_LAYER_MASK;
+
+        const colorObjectCamera = camera.clone(
+            "farbobjekt-kamera"
+        );
+
+        colorObjectCamera.layerMask = COLOR_OBJECT_LAYER_MASK;
+
 
         /*
             Die Kamera blickt leicht nach unten
@@ -492,6 +560,226 @@ const verticalFov =
 
 camera.minZ = 0.05;
 camera.maxZ = 50;
+
+/*
+    Liefert dem Bleistift-Postprocess echte Tiefen- und
+    Normaleninformationen der 3D-Geometrie.
+
+    Dadurch muss die Kantenerkennung nicht mehr auf Farbkontraste
+    reagieren und lässt die feinen Striche der Texturen in Ruhe.
+*/
+const pencilGeometryBuffer =
+    scene.enableGeometryBufferRenderer();
+
+if (!pencilGeometryBuffer) {
+    throw new Error(
+        "Der Browser unterstützt den benötigten Geometriepuffer nicht."
+    );
+}
+
+pencilGeometryBuffer.enableScreenspaceDepth = true;
+
+const pencilDepthTextureIndex =
+    pencilGeometryBuffer.getTextureIndex(
+        BABYLON.GeometryBufferRenderer
+            .SCREENSPACE_DEPTH_TEXTURE_TYPE
+    );
+
+const pencilNormalTextureIndex =
+    pencilGeometryBuffer.getTextureIndex(
+        BABYLON.GeometryBufferRenderer.NORMAL_TEXTURE_TYPE
+    );
+
+/*
+    Der Postprocess hellt lediglich die Tonwerte auf und ergänzt
+    echte Körperkanten. Eigene Schraffur und Farbkanten-Erkennung
+    sind absichtlich entfernt: Dafür sind nun die gezeichneten
+    Oberflächentexturen zuständig.
+*/
+BABYLON.Effect.ShadersStore.pencilFragmentShader = `
+    precision highp float;
+
+    varying vec2 vUV;
+    uniform sampler2D textureSampler;
+    uniform sampler2D depthSampler;
+    uniform sampler2D normalSampler;
+    uniform vec2 screenSize;
+
+    float luminance(vec3 color) {
+        return dot(color, vec3(0.299, 0.587, 0.114));
+    }
+
+    float paperNoise(vec2 point) {
+        return fract(
+            sin(dot(point, vec2(12.9898, 78.233))) *
+            43758.5453
+        );
+    }
+
+    void main(void) {
+        vec2 pixel = 1.0 / screenSize;
+        vec3 source = texture2D(textureSampler, vUV).rgb;
+        float center = luminance(source);
+
+        float depthCenter =
+            texture2D(depthSampler, vUV).r;
+        float depthLeft =
+            texture2D(depthSampler, vUV - vec2(pixel.x, 0.0)).r;
+        float depthRight =
+            texture2D(depthSampler, vUV + vec2(pixel.x, 0.0)).r;
+        float depthAbove =
+            texture2D(depthSampler, vUV + vec2(0.0, pixel.y)).r;
+        float depthBelow =
+            texture2D(depthSampler, vUV - vec2(0.0, pixel.y)).r;
+
+        float depthDifference = max(
+            max(abs(depthCenter - depthLeft), abs(depthCenter - depthRight)),
+            max(abs(depthCenter - depthAbove), abs(depthCenter - depthBelow))
+        );
+
+        float depthLimit = max(
+            0.0015,
+            abs(depthCenter) * 0.0025
+        );
+
+        float depthEdge = smoothstep(
+            depthLimit,
+            depthLimit * 4.5,
+            depthDifference
+        );
+
+        vec3 normalCenter =
+            texture2D(normalSampler, vUV).rgb;
+        vec3 normalLeft =
+            texture2D(normalSampler, vUV - vec2(pixel.x, 0.0)).rgb;
+        vec3 normalRight =
+            texture2D(normalSampler, vUV + vec2(pixel.x, 0.0)).rgb;
+        vec3 normalAbove =
+            texture2D(normalSampler, vUV + vec2(0.0, pixel.y)).rgb;
+        vec3 normalBelow =
+            texture2D(normalSampler, vUV - vec2(0.0, pixel.y)).rgb;
+
+        float normalDifference = max(
+            max(length(normalCenter - normalLeft), length(normalCenter - normalRight)),
+            max(length(normalCenter - normalAbove), length(normalCenter - normalBelow))
+        );
+
+        float normalEdge = smoothstep(
+            0.10,
+            0.38,
+            normalDifference
+        );
+
+        float geometryEdge = max(
+            depthEdge,
+            normalEdge
+        );
+
+        /*
+            Nur die neue geometrische Linie erhält eine leichte
+            handgezeichnete Unregelmäßigkeit. Die Textur selbst
+            wird weder verrauscht noch erneut kantengefiltert.
+        */
+        float edgeNoise = paperNoise(
+            floor(gl_FragCoord.xy * 0.40)
+        );
+
+        geometryEdge *= 0.60 + edgeNoise * 0.40;
+
+        /*
+            Diese Kurve hebt mittlere Beleuchtungswerte kräftig an,
+            lässt echtes Weiß und Schwarz der Bleistifttextur aber
+            erhalten.
+        */
+        float pencilValue = pow(
+            clamp(center, 0.0, 1.0),
+            0.55
+        );
+
+        float paperGrain =
+            (paperNoise(gl_FragCoord.xy + 19.0) - 0.5) * 0.008;
+
+        pencilValue = clamp(
+            pencilValue + paperGrain - geometryEdge * 0.55,
+            0.02,
+            1.0
+        );
+
+        vec3 pencilColor = vec3(
+            pencilValue * 1.01,
+            pencilValue,
+            pencilValue * 0.97
+        );
+
+        gl_FragColor = vec4(
+            pencilColor,
+            1.0
+        );
+    }
+`;
+
+const pencilPostProcess = new BABYLON.PostProcess(
+    "bleistift-postprocess",
+    "pencil",
+    ["screenSize"],
+    ["depthSampler", "normalSampler"],
+    1.0,
+    camera,
+    BABYLON.Texture.BILINEAR_SAMPLINGMODE,
+    engine,
+    false
+);
+
+pencilPostProcess.onApply = function (effect) {
+    effect.setFloat2(
+        "screenSize",
+        engine.getRenderWidth(),
+        engine.getRenderHeight()
+    );
+
+    const pencilGBufferTextures =
+        pencilGeometryBuffer.getGBuffer().textures;
+
+    effect.setTexture(
+        "depthSampler",
+        pencilGBufferTextures[pencilDepthTextureIndex]
+    );
+
+    effect.setTexture(
+        "normalSampler",
+        pencilGBufferTextures[pencilNormalTextureIndex]
+    );
+};
+
+let pencilStyleEnabled = true;
+let pencilMaterialController = null;
+
+const pencilStyleToggle = document.getElementById(
+    "pencil-style-toggle"
+);
+
+pencilStyleToggle.addEventListener(
+    "click",
+    function () {
+        pencilStyleEnabled = !pencilStyleEnabled;
+
+        if (pencilMaterialController) {
+            pencilMaterialController(
+                pencilStyleEnabled
+            );
+        }
+
+        if (pencilStyleEnabled) {
+            camera.attachPostProcess(pencilPostProcess);
+            pencilStyleToggle.textContent = "Bleistiftstil: an";
+        } else {
+            camera.detachPostProcess(pencilPostProcess);
+            pencilStyleToggle.textContent = "Bleistiftstil: aus";
+        }
+
+        renderOnce();
+    }
+);
 /*
     Lässt Babylon zunächst eine normale
     Projektionsmatrix erzeugen.
@@ -528,6 +816,10 @@ camera.freezeProjectionMatrix(
     customProjection
 );
 
+colorObjectCamera.freezeProjectionMatrix(
+    customProjection.clone()
+);
+
 
         /*
             Aktuelle Blickrichtung:
@@ -549,6 +841,57 @@ camera.freezeProjectionMatrix(
             new BABYLON.Vector3(0, 0, 1),
             new BABYLON.Vector3(-1, 0, 0)
         ];
+
+        /*
+            Wird nach dem Kameraufbau mit dem Spieler-Spot belegt.
+            Die Aktualisierungsfunktion hält Position und Richtung
+            anschließend ausdrücklich mit der Kamera synchron.
+        */
+        let light = null;
+
+        /*
+            Seitliche und vertikale Abweichung des Spielerlichts.
+            Beide Werte liegen ungefähr zwischen -1 und +1 und
+            verändern ausschließlich den Lichtkegel, nicht die Kamera.
+        */
+        let playerLightAimX = 0;
+        let playerLightAimY = 0;
+        let playerLightReturnFrame = null;
+
+
+        function updatePlayerLightDirection() {
+
+            if (!light) {
+                return;
+            }
+
+            const forward =
+                directions[direction];
+
+            /*
+                Waagerechter Vektor rechts neben der aktuellen
+                Blickrichtung. So funktioniert das Zielen in allen
+                vier möglichen Gangrichtungen gleich.
+            */
+            const right = new BABYLON.Vector3(
+                -forward.z,
+                0,
+                forward.x
+            );
+
+            const aimedDirection =
+                forward.clone();
+
+            aimedDirection.addInPlace(
+                right.scale(playerLightAimX * 0.85)
+            );
+
+            aimedDirection.y =
+                -0.08 + playerLightAimY * 0.58;
+
+            aimedDirection.normalize();
+            light.direction.copyFrom(aimedDirection);
+        }
 
 
         /*
@@ -606,6 +949,13 @@ function updateCameraDirection() {
             camera.position.z + lookDirection.z
         )
     );
+
+    if (light) {
+        light.position.copyFrom(camera.position);
+        light.position.y -= 0.18;
+
+        updatePlayerLightDirection();
+    }
 }
 
 
@@ -731,24 +1081,196 @@ function updateCameraDirection() {
 
 
         /*
-            Punktlicht direkt an der Kamera.
+            Gebündeltes Spielerlicht direkt an der Kamera.
+            Die Form entspricht eher einer Fackel/Taschenlampe
+            als einem kugelförmigen Punktlicht.
         */
-        const light = new BABYLON.PointLight(
+        light = new BABYLON.SpotLight(
             "camera-light",
-            new BABYLON.Vector3(
-                0,
-                0,
-                0
-            ),
+            camera.position.clone(),
+            directions[direction].clone(),
+            Math.PI / 3.6,
+            6.0,
             scene
         );
 
         /*
-            Das Licht folgt der Kamera.
+            Initiale Position exakt mit der Kamera abgleichen.
         */
-        light.parent = camera;
-        light.intensity = 0.0;
-        light.range = 0;
+        updateCameraDirection();
+        light.diffuse = new BABYLON.Color3(
+            1.0,
+            0.52,
+            0.18
+        );
+
+        /*
+            Kurzes, warmes Spielerfackellicht.
+            Es hellt nur Boden, Wände und Pfeiler direkt
+            vor der Kamera auf, nicht den gesamten Gang.
+        */
+        light.intensity = 90.0;
+        light.range = 5.0;
+
+
+        /*
+            Richtet den Spieler-Lichtkegel auf einen gedachten
+            Fluchtpunkt unter Maus oder Finger aus.
+        */
+        function aimPlayerLightAt(clientX, clientY) {
+
+            const rectangle =
+                canvas.getBoundingClientRect();
+
+            const halfWidth =
+                Math.max(rectangle.width / 2, 1);
+
+            const halfHeight =
+                Math.max(rectangle.height / 2, 1);
+
+            playerLightAimX = Math.max(
+                -1,
+                Math.min(
+                    1,
+                    (clientX - rectangle.left - halfWidth) /
+                    halfWidth
+                )
+            );
+
+            playerLightAimY = Math.max(
+                -1,
+                Math.min(
+                    1,
+                    (rectangle.top + halfHeight - clientY) /
+                    halfHeight
+                )
+            );
+
+            updatePlayerLightDirection();
+            renderOnce();
+        }
+
+
+        /*
+            Nach dem Loslassen kehrt der Kegel weich und exakt
+            innerhalb einer Sekunde in die Bildschirmmitte zurück.
+        */
+        function returnPlayerLightToCenter() {
+
+            if (playerLightReturnFrame !== null) {
+                cancelAnimationFrame(playerLightReturnFrame);
+            }
+
+            const startX = playerLightAimX;
+            const startY = playerLightAimY;
+            const startTime = performance.now();
+            const duration = 1000;
+
+            function animateReturn(now) {
+
+                const progress = Math.min(
+                    1,
+                    (now - startTime) / duration
+                );
+
+                /* Ruhiger Verlauf ohne abrupten Start oder Stopp. */
+                const eased =
+                    progress * progress * (3 - 2 * progress);
+
+                playerLightAimX = startX * (1 - eased);
+                playerLightAimY = startY * (1 - eased);
+
+                updatePlayerLightDirection();
+                renderOnce();
+
+                if (progress < 1) {
+                    playerLightReturnFrame =
+                        requestAnimationFrame(animateReturn);
+                } else {
+                    playerLightAimX = 0;
+                    playerLightAimY = 0;
+                    playerLightReturnFrame = null;
+                }
+            }
+
+            playerLightReturnFrame =
+                requestAnimationFrame(animateReturn);
+        }
+
+
+        let aimingPointerId = null;
+        const activeAimPointers = new Set();
+
+        canvas.addEventListener(
+            "pointerdown",
+            function (event) {
+
+                activeAimPointers.add(event.pointerId);
+
+                /* Zwei Finger bleiben vollständig dem Seitenzoom vorbehalten. */
+                if (activeAimPointers.size !== 1) {
+                    aimingPointerId = null;
+                    playerLightAimX = 0;
+                    playerLightAimY = 0;
+                    updatePlayerLightDirection();
+                    renderOnce();
+                    return;
+                }
+
+                if (playerLightReturnFrame !== null) {
+                    cancelAnimationFrame(playerLightReturnFrame);
+                    playerLightReturnFrame = null;
+                }
+
+                aimingPointerId = event.pointerId;
+                aimPlayerLightAt(event.clientX, event.clientY);
+
+                /* Die Maus darf auch außerhalb des Canvas losgelassen werden. */
+                if (
+                    event.pointerType === "mouse" &&
+                    canvas.setPointerCapture
+                ) {
+                    canvas.setPointerCapture(event.pointerId);
+                }
+            }
+        );
+
+        canvas.addEventListener(
+            "pointermove",
+            function (event) {
+
+                if (
+                    event.pointerId !== aimingPointerId ||
+                    activeAimPointers.size !== 1
+                ) {
+                    return;
+                }
+
+                aimPlayerLightAt(event.clientX, event.clientY);
+            }
+        );
+
+        function finishPlayerLightAim(event) {
+
+            activeAimPointers.delete(event.pointerId);
+
+            if (event.pointerId !== aimingPointerId) {
+                return;
+            }
+
+            aimingPointerId = null;
+            returnPlayerLightToCenter();
+        }
+
+        canvas.addEventListener(
+            "pointerup",
+            finishPlayerLightAim
+        );
+
+        canvas.addEventListener(
+            "pointercancel",
+            finishPlayerLightAim
+        );
 
 
         /*
@@ -759,11 +1281,14 @@ function updateCameraDirection() {
             funktionieren sie sowohl lokal über einen Webserver
             als auch später unverändert auf GitHub Pages.
         */
-        const assetFiles = [
+        const onlineAssetFiles = [
             { name: "mt3x3dünnewand.glb", url: "Assets/mt3x3dünnewand.glb" },
             { name: "Fackelhalter.glb", url: "Assets/Fackelhalter.glb" },
             { name: "Deckenplatte.glb", url: "Assets/Deckenplatte.glb" },
             { name: "seite-01.webp", url: "Assets/seite-01.webp" },
+            { name: "pencil_stone_wall_1k.png", url: "Assets/pencil_stone_wall_1k.png" },
+            { name: "pencil_stone_floor_1k.png", url: "Assets/pencil_stone_floor_1k.png" },
+            { name: "pencil_stone_pillar_1k.png", url: "Assets/pencil_stone_pillar_1k.png" },
 
             { name: "monastery_stone_floor_diff_1k.jpg", url: "Assets/monastery_stone_floor_1k/textures/monastery_stone_floor_diff_1k.jpg" },
             { name: "monastery_stone_floor_nor_gl_1k.jpg", url: "Assets/monastery_stone_floor_1k/textures/monastery_stone_floor_nor_gl_1k.jpg" },
@@ -834,7 +1359,7 @@ function updateCameraDirection() {
             Startet das Laden automatisch. Ein Dateidialog ist
             für die veröffentlichte GitHub-Version nicht nötig.
         */
-        (function loadOnlineAssets() {
+        function loadAssets(assetFiles) {
 
 /*
     Sammelt sämtliche GLB-Dateien aus dem
@@ -885,7 +1410,9 @@ Promise.all(
             "",
             "",
             glbFile.url,
-            scene
+            scene,
+            undefined,
+            ".glb"
         );
     })
 
@@ -1087,7 +1614,7 @@ torchLight.diffuse =
     Diese Werte können wir nach dem ersten
     sichtbaren Test leicht verändern.
 */
-torchLight.intensity = 7.0;
+torchLight.intensity = 9.1;
 torchLight.range = 7.0;
 
 
@@ -1293,9 +1820,9 @@ scene.onBeforeRenderObservable.add(
             performance.now() / 1000;
 
         torchLight.intensity =
-            7.0 +
-            Math.sin(time * 8.0) * 0.7 +
-            Math.sin(time * 13.0) * 0.35;
+            9.1 +
+            Math.sin(time * 8.0) * 0.91 +
+            Math.sin(time * 13.0) * 0.455;
     }
 );				/*
     Sucht gezielt die Oberseite von WAS23.
@@ -1684,6 +2211,16 @@ const was23Parts =
             return belongsToWas23(mesh);
         }
     );
+
+/*
+    Die gesamte Zeitung – nicht nur ihr roter Titel – wird von
+    der normalen Bleistiftkamera getrennt und farbig gerendert.
+*/
+was23Parts.forEach(
+    function (mesh) {
+        mesh.layerMask = COLOR_OBJECT_LAYER_MASK;
+    }
+);
 
 
 /*
@@ -2186,6 +2723,21 @@ const ceilingParts =
                         "stone_brick_wall_001_rough_1k.jpg"
                     );
 
+                    const pencilWallFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_wall_1k.png"
+                    );
+
+                    const pencilFloorFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_floor_1k.png"
+                    );
+
+                    const pencilPillarFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_pillar_1k.png"
+                    );
+
 
                     /*
                         Sucht das eigenständige Texturset
@@ -2243,6 +2795,9 @@ const ceilingRoughnessFile =
                         !wallDiffuseFile ||
                         !wallNormalFile ||
                         !wallRoughnessFile ||
+                        !pencilWallFile ||
+                        !pencilFloorFile ||
+                        !pencilPillarFile ||
                         !pillarDiffuseFile ||
                         !pillarNormalFile ||
                         !pillarRoughnessFile||
@@ -2486,6 +3041,278 @@ ceilingPbrMaterial.roughness =
                         texture.wAng =
                             Math.PI / 2;
                     });
+
+
+                    /*
+                        Echte gezeichnete Mauertextur für den
+                        Bleistiftmodus. Sie ersetzt dort die
+                        fotografische Diffuse-, Normal- und
+                        Roughness-Kombination vollständig.
+                    */
+                    const pencilWallTexture =
+                        new BABYLON.Texture(
+                            pencilWallFile.url,
+                            scene
+                        );
+
+                    pencilWallTexture.uScale = 1.2;
+                    pencilWallTexture.vScale = 1.2;
+                    pencilWallTexture.uRotationCenter = 0.5;
+                    pencilWallTexture.vRotationCenter = 0.5;
+                    pencilWallTexture.wAng = Math.PI / 2;
+
+                    /*
+                        Eigene Handzeichnungen für Boden und Pfeiler.
+                        Beide Achsen bleiben absichtlich gleich skaliert,
+                        damit die Platten und Quader nicht verzerrt werden.
+                    */
+                    const pencilFloorTexture =
+                        new BABYLON.Texture(
+                            pencilFloorFile.url,
+                            scene
+                        );
+
+                    pencilFloorTexture.uScale = 1.0;
+                    pencilFloorTexture.vScale = 1.0;
+
+                    const pencilPillarTexture =
+                        new BABYLON.Texture(
+                            pencilPillarFile.url,
+                            scene
+                        );
+
+                    pencilPillarTexture.uScale = 1.0;
+                    pencilPillarTexture.vScale = 1.0;
+
+                    /*
+                        Der Querbalken benötigt eine eigene Instanz,
+                        damit spätere Korrekturen an seiner Ausrichtung
+                        nicht zugleich die senkrechten Pfeiler verändern.
+                    */
+                    const pencilBeamTexture =
+                        new BABYLON.Texture(
+                            pencilPillarFile.url,
+                            scene
+                        );
+
+                    pencilBeamTexture.uScale = 1.0;
+                    pencilBeamTexture.vScale = 1.0;
+
+                    [
+                        pencilWallTexture,
+                        pencilFloorTexture,
+                        pencilPillarTexture,
+                        pencilBeamTexture
+                    ].forEach(function (texture) {
+                        texture.updateSamplingMode(
+                            BABYLON.Texture.TRILINEAR_SAMPLINGMODE
+                        );
+                        texture.anisotropicFilteringLevel = 8;
+                    });
+
+                    const normalFloorAlbedo =
+                        floorPbrMaterial.albedoTexture;
+                    const normalFloorBump =
+                        floorPbrMaterial.bumpTexture;
+                    const normalFloorRoughnessMap =
+                        floorPbrMaterial.metallicTexture;
+                    const normalFloorRoughness =
+                        floorPbrMaterial.roughness;
+                    const normalFloorEmissiveTexture =
+                        floorPbrMaterial.emissiveTexture;
+                    const normalFloorEmissiveColor =
+                        floorPbrMaterial.emissiveColor.clone();
+                    const normalFloorBumpLevel =
+                        normalFloorBump.level;
+
+                    const normalPillarAlbedo =
+                        pillarPbrMaterial.albedoTexture;
+                    const normalPillarBump =
+                        pillarPbrMaterial.bumpTexture;
+                    const normalPillarRoughnessMap =
+                        pillarPbrMaterial.metallicTexture;
+                    const normalPillarRoughness =
+                        pillarPbrMaterial.roughness;
+                    const normalPillarEmissiveTexture =
+                        pillarPbrMaterial.emissiveTexture;
+                    const normalPillarEmissiveColor =
+                        pillarPbrMaterial.emissiveColor.clone();
+                    const normalPillarBumpLevel =
+                        normalPillarBump.level;
+
+                    const normalBeamAlbedo =
+                        beamPbrMaterial.albedoTexture;
+                    const normalBeamBump =
+                        beamPbrMaterial.bumpTexture;
+                    const normalBeamRoughnessMap =
+                        beamPbrMaterial.metallicTexture;
+                    const normalBeamRoughness =
+                        beamPbrMaterial.roughness;
+                    const normalBeamEmissiveTexture =
+                        beamPbrMaterial.emissiveTexture;
+                    const normalBeamEmissiveColor =
+                        beamPbrMaterial.emissiveColor.clone();
+                    const normalBeamBumpLevel =
+                        normalBeamBump.level;
+
+                    const normalWallAlbedo =
+                        wallPbrMaterial.albedoTexture;
+                    const normalWallBump =
+                        wallPbrMaterial.bumpTexture;
+                    const normalWallRoughnessMap =
+                        wallPbrMaterial.metallicTexture;
+                    const normalWallRoughness =
+                        wallPbrMaterial.roughness;
+                    const normalWallEmissiveTexture =
+                        wallPbrMaterial.emissiveTexture;
+                    const normalWallEmissiveColor =
+                        wallPbrMaterial.emissiveColor.clone();
+                    const normalWallBumpLevel =
+                        normalWallBump.level;
+
+                    pencilMaterialController =
+                        function (enabled) {
+                            if (enabled) {
+                                floorPbrMaterial.albedoTexture =
+                                    pencilFloorTexture;
+                                floorPbrMaterial.bumpTexture =
+                                    normalFloorBump;
+                                /*
+                                    Die gezeichneten Bodenplatten behalten
+                                    ihre Bleistiftfarbe, erhalten aber die
+                                    deutlich sichtbare räumliche Struktur
+                                    der ursprünglichen Normal-Map zurück.
+                                */
+                                normalFloorBump.level = 0.55;
+                                floorPbrMaterial.metallicTexture =
+                                    normalFloorRoughnessMap;
+                                floorPbrMaterial.metallic = 0.0;
+                                /*
+                                    Etwas weniger matt, damit das bewegliche
+                                    Spielerlicht die Höhen und Vertiefungen
+                                    der Platten sichtbar modelliert.
+                                */
+                                floorPbrMaterial.roughness = 0.72;
+                                floorPbrMaterial.emissiveTexture =
+                                    pencilFloorTexture;
+                                floorPbrMaterial.emissiveColor =
+                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                floorPbrMaterial.unlit = false;
+
+                                pillarPbrMaterial.albedoTexture =
+                                    pencilPillarTexture;
+                                pillarPbrMaterial.bumpTexture =
+                                    normalPillarBump;
+                                normalPillarBump.level = 0.22;
+                                pillarPbrMaterial.metallicTexture =
+                                    normalPillarRoughnessMap;
+                                pillarPbrMaterial.metallic = 0.0;
+                                pillarPbrMaterial.roughness = 0.9;
+                                pillarPbrMaterial.emissiveTexture =
+                                    pencilPillarTexture;
+                                pillarPbrMaterial.emissiveColor =
+                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                pillarPbrMaterial.unlit = false;
+
+                                beamPbrMaterial.albedoTexture =
+                                    pencilBeamTexture;
+                                beamPbrMaterial.bumpTexture =
+                                    normalBeamBump;
+                                normalBeamBump.level = 0.22;
+                                beamPbrMaterial.metallicTexture =
+                                    normalBeamRoughnessMap;
+                                beamPbrMaterial.metallic = 0.0;
+                                beamPbrMaterial.roughness = 0.9;
+                                beamPbrMaterial.emissiveTexture =
+                                    pencilBeamTexture;
+                                beamPbrMaterial.emissiveColor =
+                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                beamPbrMaterial.unlit = false;
+
+                                wallPbrMaterial.albedoTexture =
+                                    pencilWallTexture;
+                                wallPbrMaterial.bumpTexture =
+                                    normalWallBump;
+                                normalWallBump.level = 0.18;
+                                wallPbrMaterial.metallicTexture =
+                                    normalWallRoughnessMap;
+                                wallPbrMaterial.metallic = 0.0;
+                                wallPbrMaterial.roughness = 0.92;
+                                wallPbrMaterial.emissiveTexture =
+                                    pencilWallTexture;
+                                wallPbrMaterial.emissiveColor =
+                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+								wallPbrMaterial.unlit = false;
+                            } else {
+                                floorPbrMaterial.albedoTexture =
+                                    normalFloorAlbedo;
+                                floorPbrMaterial.bumpTexture =
+                                    normalFloorBump;
+                                floorPbrMaterial.metallicTexture =
+                                    normalFloorRoughnessMap;
+                                floorPbrMaterial.roughness =
+                                    normalFloorRoughness;
+                                normalFloorBump.level =
+                                    normalFloorBumpLevel;
+                                floorPbrMaterial.emissiveTexture =
+                                    normalFloorEmissiveTexture;
+                                floorPbrMaterial.emissiveColor =
+                                    normalFloorEmissiveColor;
+                                floorPbrMaterial.unlit = false;
+
+                                pillarPbrMaterial.albedoTexture =
+                                    normalPillarAlbedo;
+                                pillarPbrMaterial.bumpTexture =
+                                    normalPillarBump;
+                                pillarPbrMaterial.metallicTexture =
+                                    normalPillarRoughnessMap;
+                                pillarPbrMaterial.roughness =
+                                    normalPillarRoughness;
+                                normalPillarBump.level =
+                                    normalPillarBumpLevel;
+                                pillarPbrMaterial.emissiveTexture =
+                                    normalPillarEmissiveTexture;
+                                pillarPbrMaterial.emissiveColor =
+                                    normalPillarEmissiveColor;
+                                pillarPbrMaterial.unlit = false;
+
+                                beamPbrMaterial.albedoTexture =
+                                    normalBeamAlbedo;
+                                beamPbrMaterial.bumpTexture =
+                                    normalBeamBump;
+                                beamPbrMaterial.metallicTexture =
+                                    normalBeamRoughnessMap;
+                                beamPbrMaterial.roughness =
+                                    normalBeamRoughness;
+                                normalBeamBump.level =
+                                    normalBeamBumpLevel;
+                                beamPbrMaterial.emissiveTexture =
+                                    normalBeamEmissiveTexture;
+                                beamPbrMaterial.emissiveColor =
+                                    normalBeamEmissiveColor;
+                                beamPbrMaterial.unlit = false;
+
+                                wallPbrMaterial.albedoTexture =
+                                    normalWallAlbedo;
+                                wallPbrMaterial.bumpTexture =
+                                    normalWallBump;
+                                wallPbrMaterial.metallicTexture =
+                                    normalWallRoughnessMap;
+                                wallPbrMaterial.roughness =
+                                    normalWallRoughness;
+                                normalWallBump.level =
+                                    normalWallBumpLevel;
+                                wallPbrMaterial.emissiveTexture =
+                                    normalWallEmissiveTexture;
+                                wallPbrMaterial.emissiveColor =
+                                    normalWallEmissiveColor;
+								wallPbrMaterial.unlit = false;	
+                            }
+                        };
+
+                    pencilMaterialController(
+                        pencilStyleEnabled
+                    );
 
 
                     /*
@@ -3117,6 +3944,22 @@ torchShadowGenerator.setDarkness(
 );
 
 /*
+    Eigene Schattenkarte für die Spielerfackel.
+    Ohne sie würde der Kameraspot zwar aufhellen,
+    aber keinerlei Schlagschatten erzeugen.
+*/
+const playerShadowGenerator =
+    new BABYLON.ShadowGenerator(
+        1024,
+        light
+    );
+
+playerShadowGenerator.usePoissonSampling = true;
+playerShadowGenerator.bias = 0.001;
+playerShadowGenerator.normalBias = 0.02;
+playerShadowGenerator.setDarkness(0.05);
+
+/*
     Alle bereits erzeugten Geometrieteile
     dürfen Schatten empfangen und werfen.
 */
@@ -3137,6 +3980,10 @@ scene.meshes.forEach(
         mesh.receiveShadows = true;
 
         torchShadowGenerator.addShadowCaster(
+            mesh
+        );
+
+        playerShadowGenerator.addShadowCaster(
             mesh
         );
     }
@@ -3176,7 +4023,51 @@ scene.executeWhenReady(
                         error
                     );
                 });
-        })();
+        }
+
+
+        /*
+            Wählt je nach Startart den passenden Ladeweg.
+
+            Lokal zeigt die Seite einen Ordnerknopf. Der Browser
+            erhält damit ausdrücklich Zugriff auf die gewählten
+            GLB- und Texturdateien.
+
+            Auf GitHub werden die bekannten relativen Pfade
+            automatisch benutzt und der Knopf bleibt unsichtbar.
+        */
+        const offlineAssetChooser = document.getElementById(
+            "offline-asset-chooser"
+        );
+
+        const assetFolderInput = document.getElementById(
+            "asset-folder-input"
+        );
+
+        if (runsLocally) {
+            offlineAssetChooser.hidden = false;
+
+            assetFolderInput.addEventListener(
+                "change",
+                function () {
+                    const localAssetFiles = Array.from(
+                        assetFolderInput.files
+                    ).map(function (file) {
+                        return {
+                            name: file.name,
+                            url: URL.createObjectURL(file),
+                            originalFile: file
+                        };
+                    });
+
+                    loadAssets(localAssetFiles);
+                },
+                { once: true }
+            );
+        } else {
+            offlineAssetChooser.hidden = true;
+            loadAssets(onlineAssetFiles);
+        }
 
 
 
@@ -3189,7 +4080,38 @@ scene.executeWhenReady(
     neue Bilder pro Sekunde.
 */
 function renderOnce() {
+    /* Zuerst wird ausschließlich der Dungeon mit Bleistiftstil gezeichnet. */
+    scene.activeCamera = camera;
+    scene.autoClear = true;
+    scene.autoClearDepthAndStencil = true;
     scene.render();
+
+    /*
+        Danach wird die Zeitung ohne Löschen des fertigen Bildes
+        und ohne Bleistift-Postprocess farbig darüber gerendert.
+    */
+    colorObjectCamera.position.copyFrom(camera.position);
+    colorObjectCamera.rotation.copyFrom(camera.rotation);
+
+    if (camera.rotationQuaternion) {
+        if (!colorObjectCamera.rotationQuaternion) {
+            colorObjectCamera.rotationQuaternion =
+                camera.rotationQuaternion.clone();
+        } else {
+            colorObjectCamera.rotationQuaternion.copyFrom(
+                camera.rotationQuaternion
+            );
+        }
+    }
+
+    scene.activeCamera = colorObjectCamera;
+    scene.autoClear = false;
+    scene.autoClearDepthAndStencil = false;
+    scene.render();
+
+    scene.activeCamera = camera;
+    scene.autoClear = true;
+    scene.autoClearDepthAndStencil = true;
 }
  
     }).catch(function (error) {
@@ -3206,6 +4128,10 @@ function renderOnce() {
 &lt;div id=&quot;dungeon-view&quot;&gt;
     &lt;canvas id=&quot;dungeon-canvas&quot;&gt;&lt;/canvas&gt;
 &lt;/div&gt;
+&lt;div id=&quot;offline-asset-chooser&quot; hidden&gt;
+    &lt;label for=&quot;asset-folder-input&quot;&gt;Assets-Ordner auswählen:&lt;/label&gt;
+    &lt;input id=&quot;asset-folder-input&quot; type=&quot;file&quot; webkitdirectory directory multiple&gt;
+&lt;/div&gt;
 &lt;div id=&quot;dungeon-controls&quot;&gt;
     &lt;button id=&quot;turn-left&quot; type=&quot;button&quot; aria-label=&quot;90 Grad nach links drehen&quot;&gt;
         ↰
@@ -3218,6 +4144,9 @@ function renderOnce() {
     &lt;button id=&quot;turn-right&quot; type=&quot;button&quot; aria-label=&quot;90 Grad nach rechts drehen&quot;&gt;
         ↱
     &lt;/button&gt;
+&lt;/div&gt;
+&lt;div id=&quot;pencil-style-control&quot;&gt;
+    &lt;button id=&quot;pencil-style-toggle&quot; type=&quot;button&quot;&gt;Bleistiftstil: an&lt;/button&gt;
 &lt;/div&gt;
 &lt;p id=&quot;newspaper-text&quot; hidden&gt;die Wild am Sonntag 23, wer hat die wohl hier liegen gelassen?!&lt;/p&gt;
 &lt;&lt;/nobr&gt;&gt;</tw-passagedata></tw-storydata>
