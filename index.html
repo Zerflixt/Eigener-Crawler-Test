@@ -469,6 +469,19 @@ $(document).on(":passagedisplay", function () {
         const scene = new BABYLON.Scene(engine);
 
         /*
+            Sehr weiche Randabdunklung für das gewünschte
+            "dunkle Ecken"-Gefühl. Die Bildmitte und damit der
+            bewegliche Lichtkegel bleiben weitgehend unangetastet.
+        */
+        scene.imageProcessingConfiguration.vignetteEnabled = true;
+        scene.imageProcessingConfiguration.vignetteWeight = 2.1;
+        scene.imageProcessingConfiguration.vignetteStretch = 0.35;
+        scene.imageProcessingConfiguration.vignetteColor =
+            new BABYLON.Color4(0.0, 0.0, 0.0, 1.0);
+        scene.imageProcessingConfiguration.vignetteBlendMode =
+            BABYLON.ImageProcessingConfiguration.VIGNETTEMODE_MULTIPLY;
+
+        /*
             Verwendet das Koordinatensystem
             der GLB-Datei.
         */
@@ -670,8 +683,8 @@ BABYLON.Effect.ShadersStore.pencilFragmentShader = `
         );
 
         float normalEdge = smoothstep(
-            0.10,
-            0.38,
+            0.20,
+            0.50,
             normalDifference
         );
 
@@ -1028,6 +1041,112 @@ function updateCameraDirection() {
                 "move-forward"
             );
 
+        const CAMERA_MOVE_DURATION = 1000;
+        const CAMERA_STEP_LIFT = 0.10;
+        let cameraAnimationActive = false;
+
+        function setMovementButtonsDisabled(disabled) {
+            turnLeftButton.disabled = disabled;
+            turnRightButton.disabled = disabled;
+            moveForwardButton.disabled = disabled;
+        }
+
+        function easeInOutCubic(value) {
+            return value < 0.5
+                ? 4 * value * value * value
+                : 1 - Math.pow(-2 * value + 2, 3) / 2;
+        }
+
+        function applyAnimatedCameraDirection(forward) {
+            const animatedForward = forward.clone();
+            animatedForward.normalize();
+
+            const right = new BABYLON.Vector3(
+                -animatedForward.z,
+                0,
+                animatedForward.x
+            );
+
+            const cameraAimDirection = animatedForward.clone();
+            cameraAimDirection.addInPlace(
+                right.scale(playerLightAimX * 0.425)
+            );
+
+            camera.setTarget(new BABYLON.Vector3(
+                camera.position.x + cameraAimDirection.x,
+                camera.position.y * 0.95 + playerLightAimY * 0.29,
+                camera.position.z + cameraAimDirection.z
+            ));
+
+            if (light) {
+                const lightDirection = animatedForward.clone();
+                lightDirection.addInPlace(
+                    right.scale(playerLightAimX * 0.85)
+                );
+                lightDirection.y = -0.08 + playerLightAimY * 0.58;
+                lightDirection.normalize();
+
+                light.position.copyFrom(camera.position);
+                light.position.y -= 0.18;
+                light.direction.copyFrom(lightDirection);
+            }
+        }
+
+        function animateCameraTransition(
+            startPosition,
+            endPosition,
+            startForward,
+            endForward,
+            liftDuringStep
+        ) {
+            cameraAnimationActive = true;
+            setMovementButtonsDisabled(true);
+
+            const startedAt = performance.now();
+
+            function animationFrame(now) {
+                const rawProgress = Math.min(
+                    1,
+                    (now - startedAt) / CAMERA_MOVE_DURATION
+                );
+                const progress = easeInOutCubic(rawProgress);
+
+                camera.position.copyFrom(
+                    BABYLON.Vector3.Lerp(
+                        startPosition,
+                        endPosition,
+                        progress
+                    )
+                );
+
+                if (liftDuringStep) {
+                    camera.position.y +=
+                        Math.sin(Math.PI * rawProgress) * CAMERA_STEP_LIFT;
+                }
+
+                const animatedForward = BABYLON.Vector3.Lerp(
+                    startForward,
+                    endForward,
+                    progress
+                );
+                applyAnimatedCameraDirection(animatedForward);
+                renderOnce();
+
+                if (rawProgress < 1) {
+                    requestAnimationFrame(animationFrame);
+                    return;
+                }
+
+                camera.position.copyFrom(endPosition);
+                updateCameraDirection();
+                cameraAnimationActive = false;
+                setMovementButtonsDisabled(false);
+                renderOnce();
+            }
+
+            requestAnimationFrame(animationFrame);
+        }
+
 
         /*
             Dreht die Kamera um genau
@@ -1037,17 +1156,26 @@ function updateCameraDirection() {
             "click",
             function () {
 
+                if (cameraAnimationActive) {
+                    return;
+                }
+
                 /*
                     Eine Drehung beendet die bisherige
                     Objektauswahl.
                 */
                 clearCurrentSelection();
 
-                direction =
-                    (direction + 3) % 4;
+                const startForward = directions[direction].clone();
+                direction = (direction + 3) % 4;
 
-                updateCameraDirection();
-				renderOnce();
+                animateCameraTransition(
+                    camera.position.clone(),
+                    camera.position.clone(),
+                    startForward,
+                    directions[direction].clone(),
+                    false
+                );
             }
         );
 
@@ -1060,17 +1188,26 @@ function updateCameraDirection() {
             "click",
             function () {
 
+                if (cameraAnimationActive) {
+                    return;
+                }
+
                 /*
                     Eine Drehung beendet die bisherige
                     Objektauswahl.
                 */
                 clearCurrentSelection();
 
-                direction =
-                    (direction + 1) % 4;
+                const startForward = directions[direction].clone();
+                direction = (direction + 1) % 4;
 
-                updateCameraDirection();
-				renderOnce();
+                animateCameraTransition(
+                    camera.position.clone(),
+                    camera.position.clone(),
+                    startForward,
+                    directions[direction].clone(),
+                    false
+                );
             }
         );
 
@@ -1087,6 +1224,10 @@ function updateCameraDirection() {
             "click",
             function () {
 
+                if (cameraAnimationActive) {
+                    return;
+                }
+
                 clearCurrentSelection();
 
                 const step = gridSteps[direction];
@@ -1101,16 +1242,24 @@ function updateCameraDirection() {
                 playerGridX = nextX;
                 playerGridZ = nextZ;
 
-                camera.position.x =
+                const startPosition = camera.position.clone();
+                const endPosition = camera.position.clone();
+
+                endPosition.x =
                     TILE_SIZE / 2 +
                     playerGridX * TILE_SIZE;
 
-                camera.position.z =
+                endPosition.z =
                     -TILE_SIZE / 2 -
                     playerGridZ * TILE_SIZE;
 
-                updateCameraDirection();
-                renderOnce();
+                animateCameraTransition(
+                    startPosition,
+                    endPosition,
+                    directions[direction].clone(),
+                    directions[direction].clone(),
+                    true
+                );
             }
         );
 
@@ -1235,6 +1384,18 @@ function updateCameraDirection() {
 
         let aimingPointerId = null;
         const activeAimPointers = new Set();
+        const AIM_DRAG_THRESHOLD = 10;
+        let aimGestureStartX = 0;
+        let aimGestureStartY = 0;
+        let aimGestureHasDragged = false;
+        let aimGestureCanTap = false;
+
+        /*
+            Wird nach dem Laden der Zeitung mit der eigentlichen
+            Auswahlfunktion verbunden. Bis dahin bleibt ein kurzes
+            Tippen ohne Wirkung.
+        */
+        let handleCanvasTap = function () {};
 
         canvas.addEventListener(
             "pointerdown",
@@ -1245,6 +1406,7 @@ function updateCameraDirection() {
                 /* Zwei Finger bleiben vollständig dem Seitenzoom vorbehalten. */
                 if (activeAimPointers.size !== 1) {
                     aimingPointerId = null;
+                    aimGestureCanTap = false;
                     playerLightAimX = 0;
                     playerLightAimY = 0;
                     updatePlayerAim();
@@ -1258,7 +1420,10 @@ function updateCameraDirection() {
                 }
 
                 aimingPointerId = event.pointerId;
-                aimPlayerLightAt(event.clientX, event.clientY);
+                aimGestureStartX = event.clientX;
+                aimGestureStartY = event.clientY;
+                aimGestureHasDragged = false;
+                aimGestureCanTap = true;
 
                 /* Maus und Finger bleiben auch am Canvasrand zuverlässig aktiv. */
                 if (
@@ -1280,6 +1445,25 @@ function updateCameraDirection() {
                     return;
                 }
 
+                const movedX = event.clientX - aimGestureStartX;
+                const movedY = event.clientY - aimGestureStartY;
+
+                if (!aimGestureHasDragged) {
+                    const movedDistance = Math.hypot(movedX, movedY);
+
+                    if (movedDistance < AIM_DRAG_THRESHOLD) {
+                        return;
+                    }
+
+                    aimGestureHasDragged = true;
+                    aimGestureCanTap = false;
+
+                    if (playerLightReturnFrame !== null) {
+                        cancelAnimationFrame(playerLightReturnFrame);
+                        playerLightReturnFrame = null;
+                    }
+                }
+
                 /* Verhindert mobiles Scrollen während des Ein-Finger-Zielens. */
                 if (event.pointerType === "touch") {
                     event.preventDefault();
@@ -1297,8 +1481,19 @@ function updateCameraDirection() {
                 return;
             }
 
+            const wasTap =
+                aimGestureCanTap &&
+                !aimGestureHasDragged;
+
             aimingPointerId = null;
-            returnPlayerLightToCenter();
+            aimGestureCanTap = false;
+
+            if (wasTap) {
+                handleCanvasTap(event);
+                renderOnce();
+            } else {
+                returnPlayerLightToCenter();
+            }
         }
 
         canvas.addEventListener(
@@ -1338,9 +1533,10 @@ function updateCameraDirection() {
             { name: "seite-01.webp", url: "Assets/seite-01.webp" },
             { name: "pencil_stone_wall_1k.png", url: "Assets/pencil_stone_wall_1k.png" },
             { name: "pencil_stone_floor_1k.png", url: "Assets/pencil_stone_floor_1k.png" },
-            { name: "pencil_stone_floor_normal_1k.png", url: "Assets/pencil_stone_floor_normal_1k.png" },
+            { name: "pencil_stone_floor_normal_relief_1k.png", url: "Assets/pencil_stone_floor_normal_relief_1k.png" },
             { name: "pencil_stone_floor_roughness_1k.png", url: "Assets/pencil_stone_floor_roughness_1k.png" },
             { name: "pencil_stone_pillar_1k.png", url: "Assets/pencil_stone_pillar_1k.png" },
+            { name: "pencil_stone_pillar_single_column_1k.png", url: "Assets/pencil_stone_pillar_single_column_1k.png" },
 
             { name: "monastery_stone_floor_diff_1k.jpg", url: "Assets/monastery_stone_floor_1k/textures/monastery_stone_floor_diff_1k.jpg" },
             { name: "monastery_stone_floor_nor_gl_1k.jpg", url: "Assets/monastery_stone_floor_1k/textures/monastery_stone_floor_nor_gl_1k.jpg" },
@@ -2380,12 +2576,52 @@ was23Parts.forEach(
 
 
 /*
-    Reagiert direkt auf Tippen oder Klicken
-    innerhalb des Canvas.
+    Unsichtbare, etwas größere Trefferfläche der Zeitung.
+    Das sichtbare Modell und seine Größe bleiben unverändert.
 */
-canvas.addEventListener(
-    "pointerdown",
+newspaperTop.computeWorldMatrix(true);
+
+const newspaperBounds =
+    newspaperTop.getBoundingInfo().boundingBox;
+
+const newspaperHitboxSize =
+    newspaperBounds.maximumWorld.subtract(
+        newspaperBounds.minimumWorld
+    );
+
+const newspaperHitbox =
+    BABYLON.MeshBuilder.CreateBox(
+        "was23-unsichtbare-klickflaeche",
+        {
+            width: Math.max(0.30, newspaperHitboxSize.x * 1.45),
+            height: Math.max(0.14, newspaperHitboxSize.y * 2.0),
+            depth: Math.max(0.30, newspaperHitboxSize.z * 1.45)
+        },
+        scene
+    );
+
+newspaperHitbox.position.copyFrom(
+    newspaperBounds.minimumWorld.add(
+        newspaperBounds.maximumWorld
+    ).scale(0.5)
+);
+
+newspaperHitbox.visibility = 0;
+newspaperHitbox.isPickable = true;
+
+
+/*
+    Ein ruhiges kurzes Tippen wählt aus. Diese Funktion wird erst
+    beim Loslassen aufgerufen, sofern der Finger oder Mauszeiger
+    weniger als zehn Pixel bewegt wurde. Ziehen bleibt dadurch
+    ausschließlich für Licht- und Kamerasteuerung reserviert.
+*/
+handleCanvasTap =
     function (event) {
+
+        if (cameraAnimationActive) {
+            return;
+        }
 
         /*
             Ermittelt die Position des Klicks
@@ -2460,7 +2696,10 @@ canvas.addEventListener(
         );
 
 
-        if (!belongsToWas23(clickedMesh)) {
+        if (
+            clickedMesh !== newspaperHitbox &&
+            !belongsToWas23(clickedMesh)
+        ) {
 
             /*
                 Ein Klick auf ein anderes Modellteil
@@ -2502,27 +2741,12 @@ canvas.addEventListener(
                 "WAS23 wurde abgewählt."
             );
         }
-    }
-);
+    };
 
 
 console.log(
     "Zu WAS23 gehörende Modellflächen:",
     was23Parts
-);
-/*
-    Nach einem Klick auf die 3D-Ansicht wird
-    genau ein neues Bild berechnet.
-
-    Der vorhandene Auswahlcode verarbeitet zunächst
-    den Klick. Anschließend zeichnet dieser Listener
-    dessen sichtbares Ergebnis.
-*/
-canvas.addEventListener(
-    "pointerup",
-    function () {
-        renderOnce();
-    }
 );
 if (was23Parts.length === 0) {
 
@@ -2787,7 +3011,7 @@ const ceilingParts =
 
                     const pencilFloorNormalFile = findAssetFile(
                         assetFiles,
-                        "pencil_stone_floor_normal_1k.png"
+                        "pencil_stone_floor_normal_relief_1k.png"
                     );
 
                     const pencilFloorRoughnessFile = findAssetFile(
@@ -2798,6 +3022,11 @@ const ceilingParts =
                     const pencilPillarFile = findAssetFile(
                         assetFiles,
                         "pencil_stone_pillar_1k.png"
+                    );
+
+                    const pencilPillarSingleColumnFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_pillar_single_column_1k.png"
                     );
 
 
@@ -2862,6 +3091,7 @@ const ceilingRoughnessFile =
                         !pencilFloorNormalFile ||
                         !pencilFloorRoughnessFile ||
                         !pencilPillarFile ||
+                        !pencilPillarSingleColumnFile ||
                         !pillarDiffuseFile ||
                         !pillarNormalFile ||
                         !pillarRoughnessFile||
@@ -3136,8 +3366,8 @@ ceilingPbrMaterial.roughness =
                             scene
                         );
 
-                    pencilFloorTexture.uScale = 1.0;
-                    pencilFloorTexture.vScale = 1.0;
+                    pencilFloorTexture.uScale = 1.67;
+                    pencilFloorTexture.vScale = 1.67;
 
                     /*
                         Diese beiden Karten wurden unmittelbar aus
@@ -3161,18 +3391,25 @@ ceilingPbrMaterial.roughness =
                         pencilFloorNormalTexture,
                         pencilFloorRoughnessTexture
                     ].forEach(function (texture) {
-                        texture.uScale = 1.0;
-                        texture.vScale = 1.0;
+                        texture.uScale = 1.67;
+                        texture.vScale = 1.67;
                     });
 
                     const pencilPillarTexture =
                         new BABYLON.Texture(
-                            pencilPillarFile.url,
+                            pencilPillarSingleColumnFile.url,
                             scene
                         );
 
+                    /*
+                        Nur eine Steinbreite auf jeder Säulenseite.
+                        Die bisherigen drei Steinlagen bleiben in ihrer
+                        Höhe erhalten; lediglich die störende senkrechte
+                        Fuge in der Mitte verschwindet.
+                    */
                     pencilPillarTexture.uScale = 1.0;
                     pencilPillarTexture.vScale = 1.0;
+                    pencilPillarTexture.uOffset = 0.25;
 
                     /*
                         Der Querbalken benötigt eine eigene Instanz,
@@ -3273,26 +3510,26 @@ ceilingPbrMaterial.roughness =
                                 floorPbrMaterial.metallicTexture =
                                     pencilFloorRoughnessTexture;
                                 floorPbrMaterial.metallic = 0.0;
-                                floorPbrMaterial.roughness = 0.78;
+                                /* Feuchter Stein mit klaren Lichtreflexen. */
+                                floorPbrMaterial.roughness = 0.45;
                                 floorPbrMaterial.emissiveTexture =
-                                    pencilFloorTexture;
+                                    null;
                                 floorPbrMaterial.emissiveColor =
-                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                    new BABYLON.Color3(0.0, 0.0, 0.0);
                                 floorPbrMaterial.unlit = false;
 
                                 pillarPbrMaterial.albedoTexture =
                                     pencilPillarTexture;
                                 pillarPbrMaterial.bumpTexture =
-                                    normalPillarBump;
-                                normalPillarBump.level = 0.22;
+                                    null;
                                 pillarPbrMaterial.metallicTexture =
-                                    normalPillarRoughnessMap;
+                                    null;
                                 pillarPbrMaterial.metallic = 0.0;
                                 pillarPbrMaterial.roughness = 0.9;
                                 pillarPbrMaterial.emissiveTexture =
-                                    pencilPillarTexture;
+                                    null;
                                 pillarPbrMaterial.emissiveColor =
-                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                    new BABYLON.Color3(0.0, 0.0, 0.0);
                                 pillarPbrMaterial.unlit = false;
 
                                 beamPbrMaterial.albedoTexture =
@@ -3305,9 +3542,9 @@ ceilingPbrMaterial.roughness =
                                 beamPbrMaterial.metallic = 0.0;
                                 beamPbrMaterial.roughness = 0.9;
                                 beamPbrMaterial.emissiveTexture =
-                                    pencilBeamTexture;
+                                    null;
                                 beamPbrMaterial.emissiveColor =
-                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                    new BABYLON.Color3(0.0, 0.0, 0.0);
                                 beamPbrMaterial.unlit = false;
 
                                 wallPbrMaterial.albedoTexture =
@@ -3320,9 +3557,9 @@ ceilingPbrMaterial.roughness =
                                 wallPbrMaterial.metallic = 0.0;
                                 wallPbrMaterial.roughness = 0.92;
                                 wallPbrMaterial.emissiveTexture =
-                                    pencilWallTexture;
+                                    null;
                                 wallPbrMaterial.emissiveColor =
-                                    new BABYLON.Color3(0.05, 0.05, 0.05);
+                                    new BABYLON.Color3(0.0, 0.0, 0.0);
 								wallPbrMaterial.unlit = false;
                             } else {
                                 floorPbrMaterial.albedoTexture =
