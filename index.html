@@ -313,20 +313,25 @@ body {
     */
     display: block;
 
-    /* Das Canvas verarbeitet die Zwei-Finger-Zoomgeste selbst. */
+    /* Ein Finger zielt; zwei Finger bleiben für den Seitenzoom frei. */
     /*
-        Der Browser darf auf der 3D-Fläche seine normalen
-        Berührungsgesten verwenden. Dadurch vergrößert eine
-        Zwei-Finger-Geste die gesamte Webseite – einschließlich
-        Dungeonansicht, Zeitung, Text und Navigationsknöpfen.
+        Ein-Finger-Wischen wird von der Spielerfackel verarbeitet.
+        Eine Zwei-Finger-Geste vergrößert weiterhin die gesamte
+        Webseite – einschließlich Dungeonansicht, Zeitung, Text
+        und Navigationsknöpfen.
     */
     /*
         "!important" ist hier absichtlich nötig:
         Babylon setzt am Canvas selbst eine Touch-Vorgabe.
-        Diese Zeile gibt dem Browser trotzdem ausdrücklich
-        Pinch-Zoom und das Verschieben der vergrößerten Seite frei.
+        Diese Zeile gibt dem Browser weiterhin ausdrücklich
+        den Pinch-Zoom frei, aber nicht den einzelnen Zielfinger.
     */
-    touch-action: pan-x pan-y pinch-zoom !important;
+    touch-action: pinch-zoom !important;
+
+    /* Unterdrückt Markierung und das mobile Langdruck-Menü. */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
 }
 
 /* Beschreibung eines angeklickten Gegenstands. */
@@ -895,6 +900,48 @@ colorObjectCamera.freezeProjectionMatrix(
 
 
         /*
+            Die Kamera folgt demselben Ziel nur mit halbem Ausschlag.
+            Die eigentliche Raster-Blickrichtung bleibt unverändert.
+        */
+        function updatePlayerCameraAim() {
+
+            const forward =
+                directions[direction];
+
+            const right = new BABYLON.Vector3(
+                -forward.z,
+                0,
+                forward.x
+            );
+
+            const cameraAimDirection =
+                forward.clone();
+
+            cameraAimDirection.addInPlace(
+                right.scale(playerLightAimX * 0.425)
+            );
+
+            const targetHeight =
+                camera.position.y * 0.95 +
+                playerLightAimY * 0.29;
+
+            camera.setTarget(
+                new BABYLON.Vector3(
+                    camera.position.x + cameraAimDirection.x,
+                    targetHeight,
+                    camera.position.z + cameraAimDirection.z
+                )
+            );
+        }
+
+
+        function updatePlayerAim() {
+            updatePlayerLightDirection();
+            updatePlayerCameraAim();
+        }
+
+
+        /*
             Aktuelle Position im einfachen Dungeonraster.
 
             Der Prototyp besitzt momentan drei begehbare
@@ -936,19 +983,7 @@ colorObjectCamera.freezeProjectionMatrix(
         */
 function updateCameraDirection() {
 
-    const lookDirection =
-        directions[direction];
-
-    const targetHeight =
-        camera.position.y * 0.95;
-
-    camera.setTarget(
-        new BABYLON.Vector3(
-            camera.position.x + lookDirection.x,
-            targetHeight,
-            camera.position.z + lookDirection.z
-        )
-    );
+    updatePlayerCameraAim();
 
     if (light) {
         light.position.copyFrom(camera.position);
@@ -1146,7 +1181,7 @@ function updateCameraDirection() {
                 )
             );
 
-            updatePlayerLightDirection();
+            updatePlayerAim();
             renderOnce();
         }
 
@@ -1180,7 +1215,7 @@ function updateCameraDirection() {
                 playerLightAimX = startX * (1 - eased);
                 playerLightAimY = startY * (1 - eased);
 
-                updatePlayerLightDirection();
+                updatePlayerAim();
                 renderOnce();
 
                 if (progress < 1) {
@@ -1212,7 +1247,7 @@ function updateCameraDirection() {
                     aimingPointerId = null;
                     playerLightAimX = 0;
                     playerLightAimY = 0;
-                    updatePlayerLightDirection();
+                    updatePlayerAim();
                     renderOnce();
                     return;
                 }
@@ -1225,9 +1260,8 @@ function updateCameraDirection() {
                 aimingPointerId = event.pointerId;
                 aimPlayerLightAt(event.clientX, event.clientY);
 
-                /* Die Maus darf auch außerhalb des Canvas losgelassen werden. */
+                /* Maus und Finger bleiben auch am Canvasrand zuverlässig aktiv. */
                 if (
-                    event.pointerType === "mouse" &&
                     canvas.setPointerCapture
                 ) {
                     canvas.setPointerCapture(event.pointerId);
@@ -1244,6 +1278,11 @@ function updateCameraDirection() {
                     activeAimPointers.size !== 1
                 ) {
                     return;
+                }
+
+                /* Verhindert mobiles Scrollen während des Ein-Finger-Zielens. */
+                if (event.pointerType === "touch") {
+                    event.preventDefault();
                 }
 
                 aimPlayerLightAt(event.clientX, event.clientY);
@@ -1272,6 +1311,17 @@ function updateCameraDirection() {
             finishPlayerLightAim
         );
 
+        /*
+            Verhindert das vibrierende Langdruck-Kontextmenü auf
+            Android und das entsprechende Callout auf iOS.
+        */
+        canvas.addEventListener(
+            "contextmenu",
+            function (event) {
+                event.preventDefault();
+            }
+        );
+
 
         /*
             Liste sämtlicher Dateien, die der veröffentlichte
@@ -1288,6 +1338,8 @@ function updateCameraDirection() {
             { name: "seite-01.webp", url: "Assets/seite-01.webp" },
             { name: "pencil_stone_wall_1k.png", url: "Assets/pencil_stone_wall_1k.png" },
             { name: "pencil_stone_floor_1k.png", url: "Assets/pencil_stone_floor_1k.png" },
+            { name: "pencil_stone_floor_normal_1k.png", url: "Assets/pencil_stone_floor_normal_1k.png" },
+            { name: "pencil_stone_floor_roughness_1k.png", url: "Assets/pencil_stone_floor_roughness_1k.png" },
             { name: "pencil_stone_pillar_1k.png", url: "Assets/pencil_stone_pillar_1k.png" },
 
             { name: "monastery_stone_floor_diff_1k.jpg", url: "Assets/monastery_stone_floor_1k/textures/monastery_stone_floor_diff_1k.jpg" },
@@ -2733,6 +2785,16 @@ const ceilingParts =
                         "pencil_stone_floor_1k.png"
                     );
 
+                    const pencilFloorNormalFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_floor_normal_1k.png"
+                    );
+
+                    const pencilFloorRoughnessFile = findAssetFile(
+                        assetFiles,
+                        "pencil_stone_floor_roughness_1k.png"
+                    );
+
                     const pencilPillarFile = findAssetFile(
                         assetFiles,
                         "pencil_stone_pillar_1k.png"
@@ -2797,6 +2859,8 @@ const ceilingRoughnessFile =
                         !wallRoughnessFile ||
                         !pencilWallFile ||
                         !pencilFloorFile ||
+                        !pencilFloorNormalFile ||
+                        !pencilFloorRoughnessFile ||
                         !pencilPillarFile ||
                         !pillarDiffuseFile ||
                         !pillarNormalFile ||
@@ -3075,6 +3139,32 @@ ceilingPbrMaterial.roughness =
                     pencilFloorTexture.uScale = 1.0;
                     pencilFloorTexture.vScale = 1.0;
 
+                    /*
+                        Diese beiden Karten wurden unmittelbar aus
+                        derselben Bleistift-Bodenzeichnung erzeugt.
+                        Ihre Fugen liegen deshalb deckungsgleich unter
+                        den schwarzen Fugen des sichtbaren Farbbildes.
+                    */
+                    const pencilFloorNormalTexture =
+                        new BABYLON.Texture(
+                            pencilFloorNormalFile.url,
+                            scene
+                        );
+
+                    const pencilFloorRoughnessTexture =
+                        new BABYLON.Texture(
+                            pencilFloorRoughnessFile.url,
+                            scene
+                        );
+
+                    [
+                        pencilFloorNormalTexture,
+                        pencilFloorRoughnessTexture
+                    ].forEach(function (texture) {
+                        texture.uScale = 1.0;
+                        texture.vScale = 1.0;
+                    });
+
                     const pencilPillarTexture =
                         new BABYLON.Texture(
                             pencilPillarFile.url,
@@ -3101,6 +3191,8 @@ ceilingPbrMaterial.roughness =
                     [
                         pencilWallTexture,
                         pencilFloorTexture,
+                        pencilFloorNormalTexture,
+                        pencilFloorRoughnessTexture,
                         pencilPillarTexture,
                         pencilBeamTexture
                     ].forEach(function (texture) {
@@ -3176,23 +3268,12 @@ ceilingPbrMaterial.roughness =
                                 floorPbrMaterial.albedoTexture =
                                     pencilFloorTexture;
                                 floorPbrMaterial.bumpTexture =
-                                    normalFloorBump;
-                                /*
-                                    Die gezeichneten Bodenplatten behalten
-                                    ihre Bleistiftfarbe, erhalten aber die
-                                    deutlich sichtbare räumliche Struktur
-                                    der ursprünglichen Normal-Map zurück.
-                                */
-                                normalFloorBump.level = 0.55;
+                                    pencilFloorNormalTexture;
+                                pencilFloorNormalTexture.level = 0.38;
                                 floorPbrMaterial.metallicTexture =
-                                    normalFloorRoughnessMap;
+                                    pencilFloorRoughnessTexture;
                                 floorPbrMaterial.metallic = 0.0;
-                                /*
-                                    Etwas weniger matt, damit das bewegliche
-                                    Spielerlicht die Höhen und Vertiefungen
-                                    der Platten sichtbar modelliert.
-                                */
-                                floorPbrMaterial.roughness = 0.72;
+                                floorPbrMaterial.roughness = 0.78;
                                 floorPbrMaterial.emissiveTexture =
                                     pencilFloorTexture;
                                 floorPbrMaterial.emissiveColor =
